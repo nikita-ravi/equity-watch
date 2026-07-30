@@ -1,0 +1,17 @@
+# Secrets — .env holds GROQ_API_KEY and LANGCHAIN_API_KEY.
+# .env.example is tracked; it documents the keys without the values.
+.env
+
+# Environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local vector store — rebuilt by `python ingest.py`
+qdrant_storage/
+
+# Run logs
+*.log
+
+# macOS
+.DS_Store
