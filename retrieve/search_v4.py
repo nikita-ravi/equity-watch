@@ -12,14 +12,22 @@ v3 leaves two failures that no amount of filtering or fusion tuning fixes:
         every slot and short sections get crowded out. Reranking 20 candidates
         instead of 5 gives the short-section chunks a second chance.
 
-So v4 does not change retrieval at all -- it widens the cut from 5 to 20 and
-lets a stronger, slower model decide the final order.
+So v4 widens the cut from 5 to 20 and lets a stronger, slower model decide the
+final order.
+
+Widening alone did not settle FM-2, because it does not change *which* chunks
+are drawn: on a JNJ-shaped filing (145 Item 8 chunks to 19 Item 1A) a flat
+top-20 is 20 Item 8 chunks and no Item 1A at all, so there is nothing for the
+cross-encoder to rescue. The draw is therefore widened by QUOTA_POOL_FACTOR and
+then budgeted per section (retrieve/quota.py) before reranking. Section-pinned
+queries skip the quota -- they are one section by construction.
 """
 
 import logging
 import time
 
 import config
+from retrieve.quota import apply_section_quota
 from retrieve.rerank import rerank
 from retrieve.search_v3 import search_v3
 from retrieve.tracing import get_tracer, record_results
@@ -45,9 +53,14 @@ def search_v4(query, top_k=config.DEFAULT_TOP_K, ticker=None, year=None,
         _set(root, "retrieval.top_k", top_k)
         _set(root, "retrieval.candidates", n_candidates)
 
+        # A section-pinned query is already one section by construction, so the
+        # quota has nothing to balance and the draw stays at n_candidates.
+        quota_on = section is None and config.SECTION_QUOTA_SHARE < 1.0
+        draw = n_candidates * config.QUOTA_POOL_FACTOR if quota_on else n_candidates
+
         pool = search_v3(
             query,
-            top_k=n_candidates,
+            top_k=draw,
             ticker=ticker,
             year=year,
             section=section,
@@ -56,6 +69,19 @@ def search_v4(query, top_k=config.DEFAULT_TOP_K, ticker=None, year=None,
             use_section_filter=use_section_filter,
             use_clean_query=use_clean_query,
         )
+
+        if quota_on:
+            with tracer.start_as_current_span("retrieve.section_quota") as span:
+                _set(span, "quota.drawn", len(pool))
+                _set(span, "quota.share", config.SECTION_QUOTA_SHARE)
+                before = len(pool)
+                pool = apply_section_quota(pool, n_candidates)
+                _set(span, "quota.kept", len(pool))
+                _set(span, "quota.sections",
+                     str(sorted({r.section for r in pool})))
+                log.debug("section quota: %d drawn -> %d candidates", before, len(pool))
+        else:
+            pool = pool[:n_candidates]
 
         with tracer.start_as_current_span("rerank.cross_encoder") as span:
             _set(span, "openinference.span.kind", "RERANKER")

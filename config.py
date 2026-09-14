@@ -86,6 +86,20 @@ RERANK_MODEL = os.environ.get("RERANK_MODEL", "BAAI/bge-reranker-base")
 # reranker more chances to rescue a chunk that RRF buried.
 RERANK_CANDIDATES = 20
 RERANK_BATCH_SIZE = 32
+
+# --- section quota (candidate-pool budgeting) --------------------------------
+# The largest share of the rerank pool any single 10-K section may occupy. The
+# imbalance this corrects is structural: JNJ FY2023 has 145 Item 8 chunks to 19
+# Item 1A chunks, so a flat top-N fills with Item 8 on volume before relevance
+# is considered. 0.5 lets Item 8 hold at most half the pool. Set to 1.0 to
+# disable and restore flat top-N behaviour.
+SECTION_QUOTA_SHARE = float(os.environ.get("SECTION_QUOTA_SHARE", "0.5"))
+# The quota reallocates slots rather than discarding them, so the underlying
+# draw is widened by this factor to give it something to reallocate *from*.
+# Costs a deeper Qdrant/BM25 read, not a deeper rerank -- the pool is cut back
+# to RERANK_CANDIDATES before the cross-encoder sees it.
+QUOTA_POOL_FACTOR = int(os.environ.get("QUOTA_POOL_FACTOR", "3"))
+
 # Cross-encoder scores below this are noise, not evidence. A chunk at 0.001 did
 # not contribute to any answer, so it must not reach the LLM or the source list.
 RELEVANCE_FLOOR = float(os.environ.get("RELEVANCE_FLOOR", "0.3"))
