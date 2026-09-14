@@ -10,7 +10,8 @@ import os
 from langchain_groq import ChatGroq
 from langgraph.prebuilt import create_react_agent
 
-from agent.tools import CALL_LOG, list_corpus, reset_call_log, search_10k
+from agent.tools import (CALL_LOG, get_financials, list_corpus,
+                         reset_call_log, search_10k)
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +32,17 @@ If a question asks about a company or year outside that scope, say so plainly \
 instead of answering from general knowledge.
 
 HOW TO USE THE TOOLS:
+get_financials returns the reported consolidated figures for one company and \
+one fiscal year, straight from the filing's XBRL data: revenue, net income, \
+operating income, total assets, total liabilities, shareholders' equity, \
+operating cash flow, capital expenditures. Prefer it over search_10k for any of \
+those -- the number is exact and needs no reading off a table. It does NOT hold \
+segment or product breakdowns (iPhone revenue, Intelligent Cloud, YouTube ads), \
+counts that live in narrative text (employees, stores, countries), or \
+bank-specific lines (net interest income, provision for credit losses); use \
+search_10k for those. A metric it reports as "could not be extracted" is a gap \
+in the tool, not a fact about the filing -- go to search_10k for that figure.
+
 list_corpus tells you exactly which companies, fiscal years and filings exist, \
 with chunk and section counts. Call it first when the question is vague about \
 scope ("healthcare companies", "the banks", "the latest filings") or when you \
@@ -75,8 +87,14 @@ In that case, make one tool call per year needed. Never silently pick a year \
 without stating it in the answer.
 
 GROUNDING RULES — these are absolute:
-- NEVER state a number, date, or fact that does not appear verbatim in a \
-retrieved chunk. Do not compute, estimate, or recall figures from memory.
+- NEVER state a number, date, or fact that did not come back from a tool — \
+either verbatim in a retrieved chunk, or as a figure get_financials returned. \
+Do not compute, estimate, or recall figures from memory.
+- If get_financials reports a metric as "could not be extracted", that is a \
+gap in the tool, NOT a fact about the filing — the company probably does \
+report it. Fall back to search_10k for that figure. Never say a company does \
+not disclose something on the strength of this tool, and never supply the \
+number yourself.
 - Chunks below the relevance floor are filtered out before you see them. If a \
 tool call reports no confident matches, say so for that company or year and do \
 NOT substitute general knowledge.
@@ -88,10 +106,11 @@ you are computing directly from two figures that each appear in chunks — and s
 which figures you used.
 
 ANSWER FORMAT — always both parts:
-1. A prose answer, grounded in the chunks.
-2. A "Sources:" section listing every chunk you actually used, one per line:
+1. A prose answer, grounded in what the tools returned.
+2. A "Sources:" section listing everything you actually used, one per line:
    [TICKER | FY{year} | {section} | chunk {index}] "{brief excerpt}"
-Only cite chunks you actually drew on. Do not pad the list."""
+   [TICKER | FY{year} | reported financials | {metric}] {value}
+Only cite what you actually drew on. Do not pad the list."""
 
 
 def build_agent(model=None, temperature=0):
@@ -109,7 +128,8 @@ def build_agent(model=None, temperature=0):
         timeout=120,
         max_retries=2,
     )
-    return create_react_agent(llm, [search_10k, list_corpus], prompt=SYSTEM_PROMPT)
+    return create_react_agent(llm, [search_10k, list_corpus, get_financials],
+                              prompt=SYSTEM_PROMPT)
 
 
 # llama on Groq intermittently emits "<function=name{...}</function>" instead of

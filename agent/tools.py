@@ -205,3 +205,105 @@ def list_corpus() -> str:
                      f"so its labels shift by {offset:+d}: {examples}.")
     lines.append("Nothing outside these companies and years exists in the corpus.")
     return "\n".join(lines)
+
+
+# --- reported financials (XBRL) ----------------------------------------------
+# Kept separate from search_10k on purpose. A figure retrieved as text has to
+# survive being flattened out of a table, ranked, and then read correctly by the
+# model; the same figure arrives here already typed and already reconciled
+# against the statement it came from. Retrieval stays the right tool for
+# narrative and for anything the consolidated statements do not carry --
+# segment splits, store counts, bank-specific lines.
+_FINANCIALS = {}
+
+
+def _financials_for(ticker, year):
+    """Extract (and cache) reconciled figures for one filing."""
+    key = (ticker, int(year))
+    if key in _FINANCIALS:
+        return _FINANCIALS[key]
+
+    from ingest.fetch import find_filings, init_edgar
+    from ingest.financials import extract
+
+    init_edgar(config.SEC_IDENTITY)
+    refs = find_filings(ticker, [int(year)])
+    if not refs:
+        _FINANCIALS[key] = None
+        return None
+    ref = refs[0]
+    _FINANCIALS[key] = extract(ref.filing.obj().financials, ticker, int(year),
+                               ref.filing_id, ref.period_of_report)
+    return _FINANCIALS[key]
+
+
+class FinancialsArgs(BaseModel):
+    ticker: str = Field(
+        description="One of AAPL, MSFT, GOOGL, JPM, BAC, XOM, WMT, JNJ, PFE, HD.")
+    year: int = Field(description="Fiscal year: 2022, 2023 or 2024 only.")
+
+
+@tool("get_financials", args_schema=FinancialsArgs)
+def get_financials(ticker, year):
+    """Reported consolidated financial figures for ONE company and ONE fiscal
+    year, taken from the filing's own XBRL data rather than from retrieved text.
+
+    Use this for top-line figures -- revenue, net income, operating income,
+    total assets, total liabilities, shareholders' equity, operating cash flow,
+    capital expenditures. It is exact and needs no interpretation.
+
+    It does NOT hold segment or product breakdowns (iPhone revenue, Intelligent
+    Cloud revenue, YouTube ads), counts that live in narrative text (employees,
+    stores, countries), or bank-specific lines (net interest income, provision
+    for credit losses). Use search_10k for those.
+
+    A metric listed as "could not be extracted" is a gap in this tool, NOT a
+    statement about the filing -- the company may well report it. Fall back to
+    search_10k for those, and never fill one in from memory.
+    """
+    checked = validate(ticker, year)
+    if not checked.ticker or not checked.year:
+        return ("get_financials needs both a valid ticker and a fiscal year "
+                "(2022-2024). " + checked.summary())
+
+    data = _financials_for(checked.ticker, checked.year)
+    if data is None:
+        return f"No 10-K on EDGAR for {checked.ticker} FY{checked.year}."
+
+    usable = data.reconciled
+    CALL_LOG.append({
+        "tool": "get_financials",
+        "used": {"ticker": checked.ticker, "year": checked.year},
+        "filing_id": data.filing_id,
+        "metrics": {k: v for k, v in usable.items()},
+        "unavailable": [k for k, f in data.figures.items()
+                        if f.status not in ("ok", "statement")],
+    })
+
+    if not usable:
+        return (f"No figures could be reconciled for {checked.ticker} "
+                f"FY{checked.year}. Do not state any number for this filing.")
+
+    lines = []
+    if checked.adjustments:
+        # search_10k surfaces this; dropping it here would answer a different
+        # question than the one asked, silently.
+        lines.append(f"[note: arguments adjusted -- {checked.summary()}]")
+    lines.append(f"{checked.ticker} FY{checked.year} reported figures "
+                 f"(10-K {data.filing_id}, period {data.period_of_report}) "
+                 f"-- US$ millions:")
+    for metric in ("revenue", "net_income", "operating_income", "total_assets",
+                   "total_liabilities", "stockholders_equity",
+                   "operating_cash_flow", "capital_expenditures"):
+        if metric in usable:
+            lines.append(f"  {metric:22} {usable[metric] / 1e6:>14,.0f}")
+    missing = [k for k, f in data.figures.items()
+               if f.status not in ("ok", "statement")]
+    if missing:
+        # Deliberately NOT "not reported". Apple reports both operating cash
+        # flow and capital expenditures; they are simply not extractable here.
+        # Wording this as a fact about the filing would put a false statement
+        # in the model's mouth.
+        lines.append(f"  could not be extracted for this filing "
+                     f"(try search_10k): {', '.join(sorted(missing))}")
+    return "\n".join(lines)
