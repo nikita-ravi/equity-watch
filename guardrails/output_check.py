@@ -131,7 +131,12 @@ def check_citations(answer, call_log, verdict=None):
         # chunk index was mangled. Worth a warning, not a block.
         loose = {(t, y, s) for t, y, s, _ in available}
         if (key[0], key[1], key[2]) in loose:
-            verdict.add("citations", "warn",
+            # The filing and section were retrieved but not that chunk index.
+            # A distinct rule, not a generic citation warning: a garbled index
+            # on a real source is a different failure from citing a source
+            # that was never retrieved, and from citing nothing at all.
+            # Collapsing them into one counter hides which is happening.
+            verdict.add("citation_index", "warn",
                         f"cited {match.group(0)} with a chunk index that was "
                         f"not retrieved")
         else:
@@ -140,7 +145,7 @@ def check_citations(answer, call_log, verdict=None):
                         f"on this turn")
 
     if seen == 0 and available:
-        verdict.add("citations", "warn",
+        verdict.add("citations_missing", "warn",
                     "chunks were retrieved but the answer cites none of them")
     return verdict
 

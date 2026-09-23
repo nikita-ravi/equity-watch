@@ -93,7 +93,18 @@ check("fabricated citation blocks", verdict.allowed, False)
 NO_CITE = """Net sales were $391,035 million in FY2024."""
 verdict = check_answer(NO_CITE, CHUNKS)
 check("missing citations warns, does not block", verdict.allowed, True)
-check("missing citations is flagged", any(f.rule == "citations" for f in verdict.findings), True)
+check("missing citations is flagged",
+      any(f.rule == "citations_missing" for f in verdict.findings), True)
+
+WRONG_INDEX = """Net sales were $391,035 million in FY2024.
+
+Sources:
+[AAPL | FY2024 | Item 8 | chunk 77] "right filing and section, wrong chunk"
+"""
+verdict = check_answer(WRONG_INDEX, CHUNKS)
+check("wrong chunk index warns, does not block", verdict.allowed, True)
+check("wrong chunk index has its own rule",
+      any(f.rule == "citation_index" for f in verdict.findings), True)
 
 # Sources block quotes chunk text verbatim; its numbers must not be counted.
 check("sources block excluded from counts",

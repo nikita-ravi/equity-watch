@@ -110,7 +110,7 @@ python eval/compare.py eval/results/v1_unfiltered.json eval/results/v3_unfiltere
 | `retrieve/` | The four retrieval versions, BM25, RRF fusion, query parser, section quota, reranker |
 | `agent/` | ReAct loop, the three tools, LLM argument validation |
 | `guardrails/` | Deterministic input and output checks, plus their tests |
-| `eval/` | 65 ground-truth questions, metric computation, runner, stored results |
+| `eval/` | 65 ground-truth questions, retrieval metrics, the faithfulness harness, stored results |
 | `config.py` | Every tuning constant, with the reasoning for each in a comment |
 | `retrieve.py` | Retrieval CLI — no LLM involved |
 
@@ -303,8 +303,8 @@ numbers in context, a coincidental arithmetic match becomes likelier. It errs
 toward allowing, which is the right bias for a check that blocks answers, but it
 is a ceiling on what this can prove.
 
-The same rules run over the eval set are the answer-faithfulness eval this
-project is missing — same check, one answer versus 65.
+The same rules run over the eval set **are** the answer-faithfulness eval:
+`eval/faithfulness_eval.py`. One answer at request time, 65 in the harness.
 
 ---
 
@@ -346,12 +346,53 @@ is cosine similarity in v1, an RRF score in v2/v3, and a cross-encoder
 probability in v4, because `rerank()` overwrites `result.score`. Read across
 versions it looks like a 29× improvement; it's a change of units.
 
+### Answer faithfulness
+
+`eval/faithfulness_eval.py` runs the agent over the ground-truth questions and
+applies the same rules the guardrails apply at request time — same checks, 65
+answers instead of one. It is the only part of the eval that exercises the agent
+path.
+
+```bash
+# generate answers and judge them
+python eval/faithfulness_eval.py --limit 10 \
+       --runs eval/results/runs.json --output eval/results/faithfulness.json
+
+# re-judge the SAME answers after changing guardrails/rules.py — no agent calls
+python eval/faithfulness_eval.py --judge-only --runs eval/results/runs.json
+```
+
+The two phases are separable on purpose. Generating answers is slow, costs Groq
+calls and is not perfectly repeatable; judging is free and deterministic.
+Splitting them means a change to the rules is re-scored against answers that
+already exist, and a bug in the judge cannot consume the expensive half of the
+work.
+
+Reported per answer and in aggregate:
+
+| Metric | Meaning |
+|---|---|
+| `faithful_rate` | answers with no blocking finding |
+| `invented_figure_rate` | answers stating a figure that is in no chunk and derivable from none |
+| `bad_citation_rate` | answers citing a source that was never retrieved |
+| `wrong_chunk_index_rate` | right filing and section, wrong chunk index |
+| `no_citation_rate` | chunks were retrieved and the answer cites none |
+| `figures.*` | every figure split into exact / rescaled / derived / invented |
+
+A question that errors is recorded with its error rather than dropped — a
+harness that silently skips failures reports a better pass rate than the system
+earns.
+
+**Not yet run against the real corpus.** It needs Qdrant up and a Groq key; the
+judging half is covered by the guardrail tests.
+
 ### What it doesn't measure
 
-- **Answer faithfulness — at all.** The eval proves the right chunks came back.
-  It cannot prove the answer reflects them. Largest gap in the project.
-- **The agent path.** `eval/` calls `search()` directly, so every number
-  describes the pre-agent system. This is why FM-10 went unnoticed.
+- **Claims made without a number.** "Apple's risks are primarily regulatory"
+  when the filing says supply chain is unfalsifiable by these rules.
+- **Retrieval quality, from the agent's side.** `eval/run_eval.py` still calls
+  `search()` directly, so the v1–v4 numbers describe the pre-agent system. This
+  is why FM-10 went unnoticed.
 - **n=65 is small.** 95% CIs are roughly ±10pp — wider than several of the
   deltas above. v1→v3 is probably real; v3→v4 probably isn't.
 - **Ground truth is unverified.** At least one confirmed error:
@@ -371,8 +412,9 @@ versions it looks like a 29× improvement; it's a change of units.
 | Retrieval v1–v4 | Working, measured |
 | Section quota | Implemented, not yet measured end to end |
 | XBRL financials | Working, measured on 240 extractions |
-| ReAct agent | Working, never measured by the eval |
-| Answer-faithfulness eval | Not built — the largest gap |
+| ReAct agent | Working, never measured by the *retrieval* eval |
+| Guardrails (4 checks) | Working, 31 tests |
+| Answer-faithfulness eval | Built; not yet run against the real corpus |
 
 **Two things must happen before the numbers above can be trusted again:**
 
@@ -384,11 +426,8 @@ versions it looks like a 29× improvement; it's a change of units.
 2. **The stored eval results are stale.** Every file in `eval/results/` reports
    `num_questions=50`; the dataset is now 65.
 
-**Next:** delete path → re-ingest → re-run all configs at n=65 → build the
-answer-faithfulness eval (invented number / unsupported superlative / wrong
-ordering / number on the wrong company, with "derived from two retrieved
-figures" carved out as *not* a hallucination — and the number check written as
-code, not an LLM judge, since self-critique fails precisely on factual errors).
+**Next:** delete path → re-ingest → re-run all configs at n=65 → run
+`faithfulness_eval.py` over the full set and record a baseline.
 
 ---
 
