@@ -114,6 +114,8 @@ def main(argv=None):
     parser.add_argument("--model", default=None)
     parser.add_argument("--temperature", type=float, default=0)
     parser.add_argument("--log-level", default="WARNING")
+    parser.add_argument("--no-guardrails", action="store_true",
+                        help="skip the input and output checks")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.WARNING),
@@ -129,6 +131,24 @@ def main(argv=None):
     print("\n" + "=" * 78)
     print(f"  QUERY: {args.query}")
     print("=" * 78)
+
+    # Input checks run BEFORE the agent, so a question no filing can answer
+    # costs nothing. A blocked question is answered with the reason rather
+    # than silently redirected -- validate() would clamp an out-of-range year
+    # and answer a different question than the one asked.
+    if not args.no_guardrails:
+        from guardrails import check_question
+        gate = check_question(args.query)
+        for finding in gate.findings:
+            print(f"  [guardrail:{finding.rule}] {finding.detail}", file=sys.stderr)
+        if not gate.allowed:
+            print("\n" + "=" * 78)
+            print("  REFUSED")
+            print("=" * 78 + "\n")
+            for finding in gate.blocking:
+                print(finding.evidence or finding.detail)
+            print()
+            return 0
 
     try:
         answer, calls, _messages = run(args.query, model=args.model,
@@ -153,6 +173,17 @@ def main(argv=None):
     print("  ANSWER")
     print("=" * 78 + "\n")
     print(answer)
+
+    # Output checks verify what the prompt only asked for. Findings are
+    # reported rather than suppressing the answer: a blocked answer with no
+    # explanation is less useful than the answer plus the reason to doubt it.
+    if not args.no_guardrails:
+        from guardrails import check_answer, format_report
+        verdict = check_answer(answer, calls)
+        print("\n" + "-" * 78)
+        print("  GUARDRAILS" + ("" if verdict.allowed else "  -- UNGROUNDED CLAIMS FOUND"))
+        print("-" * 78)
+        print(format_report(verdict))
 
     url = trace_url()
     print("\n" + "-" * 78)

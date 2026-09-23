@@ -33,6 +33,10 @@ the filing's own XBRL data and reconciled against the statement they came from.
 └───────────┬──────────────────┬───────────────┘
             │                  │
             │     ┌────────────▼───────────────┐
+            │     │   Guardrails · input       │
+            │     │   scope · advice           │
+            │     └────────────┬───────────────┘
+            │     ┌────────────▼───────────────┐
             │     │   ReAct Agent              │ ◄── LangSmith
             │     │   llama-3.3-70b · Groq     │     (agent traces)
             │     │                            │
@@ -40,6 +44,10 @@ the filing's own XBRL data and reconciled against the statement they came from.
             │     │   list_corpus              │
             │     │   get_financials ──────────┼──┐
             │     └────────────┬───────────────┘  │
+            │     ┌────────────▼───────────────┐  │
+            │     │   Guardrails · output      │  │
+            │     │   every figure · every cite│  │
+            │     └────────────────────────────┘  │
             │                  │                  │
 ┌───────────▼──────────────────▼───────────────┐  │
 │   Retrieval                                  │  │
@@ -101,6 +109,7 @@ python eval/compare.py eval/results/v1_unfiltered.json eval/results/v3_unfiltere
 | `ingest/` | EDGAR fetch, section extraction, chunking, embedding, Qdrant upsert, XBRL financials |
 | `retrieve/` | The four retrieval versions, BM25, RRF fusion, query parser, section quota, reranker |
 | `agent/` | ReAct loop, the three tools, LLM argument validation |
+| `guardrails/` | Deterministic input and output checks, plus their tests |
 | `eval/` | 65 ground-truth questions, metric computation, runner, stored results |
 | `config.py` | Every tuning constant, with the reasoning for each in a comment |
 | `retrieve.py` | Retrieval CLI — no LLM involved |
@@ -217,6 +226,85 @@ period ending September 2024 but was filed in November. Keying off the period is
 what makes "year" comparable across filers with different calendars. A
 second-order fix sits on top: Home Depot names a fiscal year after its *starting*
 calendar year while Walmart names it after the ending one.
+
+---
+
+## Guardrails
+
+The system prompt *asks* the model to stay grounded. The guardrails *verify* it.
+All four checks are deterministic — no second LLM call — because a model that
+invented `$391,035M` will confirm it when asked to check its own work.
+Self-critique fails precisely where factual errors live.
+
+**Before the agent runs**
+
+| Check | What it does |
+|---|---|
+| `scope` | Refuses years outside FY2022–24; warns when no in-corpus company is named |
+| `advice` | Refuses "should I buy", price targets, predictions — nothing in a 10-K answers them |
+
+**After the answer comes back**
+
+| Check | What it does |
+|---|---|
+| `numeric_grounding` | Every figure must appear in a retrieved chunk, come from `get_financials`, or be derivable from numbers that do |
+| `citations` | Every cited chunk must have actually been retrieved on this turn |
+
+```
+$ python -m agent.run_agent "How did Apple's revenue change from FY2022 to FY2024?"
+
+  GUARDRAILS
+  figures: 2 exact, 0 rescaled, 2 derived, 0 unsupported (2 skipped as years/ordinals)
+  clean
+```
+
+```
+$ python -m agent.run_agent "Should I buy Apple stock?"
+
+  REFUSED
+  This system reports what SEC 10-K filings say; it does not give investment
+  advice or price predictions.
+```
+
+Run the checks: `python -m guardrails.test_guardrails` — 29 cases, no pytest
+dependency.
+
+### Why these and not a jailbreak classifier?
+
+The corpus is public, audited SEC filings. The prompt-injection surface is
+theoretical, so a jailbreak filter would be copied from a system with a
+different threat model. The failure that actually happens here is a confidently
+wrong number, so that is what gets checked — with arithmetic.
+
+### Three cases that decide whether this check is useful
+
+**A derived figure is not a hallucination.** "Revenue fell $3,293 million" is
+`394,328 − 391,035`, both retrieved. Reporting that as invented is the single
+easiest way to make the check worthless, so derivation is attempted — differences,
+sums, ratios and percentage changes — before anything is called invented.
+
+**Scale words have to match bare table figures.** A 10-K states scale once, in a
+heading ("in millions"), then prints bare numbers. A chunk carries `394,328`
+while the answer writes `$394,328 million` or `$394.3 billion`. Each figure is
+therefore carried as both readings and matched on either — without this, correct
+arithmetic gets flagged.
+
+**Percentages are never matched on significant digits.** Currency rescales
+legitimately; a percentage does not. `8%` is not evidence for `80%`, and
+accepting it would pass a tenfold error — the exact failure this exists to
+catch. Percentages must be exact or derived.
+
+### What it does not do
+
+It cannot catch a wrong claim made without a number ("Apple's risks are
+primarily regulatory" when the filing says supply chain), and the derivation
+search gets more permissive as the pool of retrieved figures grows — with enough
+numbers in context, a coincidental arithmetic match becomes likelier. It errs
+toward allowing, which is the right bias for a check that blocks answers, but it
+is a ceiling on what this can prove.
+
+The same rules run over the eval set are the answer-faithfulness eval this
+project is missing — same check, one answer versus 65.
 
 ---
 
