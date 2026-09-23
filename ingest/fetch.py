@@ -11,7 +11,17 @@ _identity_set = False
 
 
 def init_edgar(identity):
-    """Set the SEC User-Agent identity. Required before any EDGAR request."""
+    """Set the SEC User-Agent identity. Required before any EDGAR request.
+
+    An empty identity is rejected here rather than passed through: EDGAR
+    answers an anonymous User-Agent with throttling or a 403, which surfaces
+    much later as a confusing fetch failure instead of a missing setting.
+    """
+    if not (identity or "").strip():
+        raise RuntimeError(
+            "SEC_IDENTITY is not set. EDGAR requires a contact address in the "
+            "User-Agent on every request. Add it to sec-rag/.env, e.g.\n"
+            "    SEC_IDENTITY=Jane Doe jane@example.com")
     global _identity_set
     if not _identity_set:
         set_identity(identity)

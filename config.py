@@ -4,7 +4,10 @@ import os
 
 # --- EDGAR -------------------------------------------------------------------
 # The SEC requires a descriptive User-Agent with a contact address on every
-# request. Override with SEC_IDENTITY if you want your own address in the logs.
+# EDGAR request; requests without one get throttled or refused. Set it in .env.
+# There is deliberately no default -- a checked-in address would put one
+# person's contact details on everybody's requests, and EDGAR rate-limits per
+# identity. init_edgar() fails loudly rather than letting an empty one through.
 SEC_IDENTITY = os.environ.get("SEC_IDENTITY", "")
 
 COMPANIES = ["AAPL", "MSFT", "JPM", "JNJ", "WMT", "XOM", "GOOGL", "BAC", "PFE", "HD"]
